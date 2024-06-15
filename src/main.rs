@@ -1,11 +1,4 @@
-use std::{fmt::Display, fs::File, io::Read};
-
-/**
- * The header to detect an RTCM3 message.
- * In binary, is:
- * 11010011
- */
-const EXPECTED_FIRST_BYTE: u8 = 0xD3;
+use std::{fs::File, io::Read};
 
 struct RTCM3Message {
     raw: Vec<u8>
@@ -16,27 +9,52 @@ enum MessageType {
     #[strum(to_string = "Unknown<value: {val}>")]
     Unknown { val: u16 },
 
+    // Misc.
+    SystemParamters,
+
+    // Base station.
     StationaryRTKReferenceStationARPWithAntennaHeight,
     AntennaDescriptorAndSerialNumber,
     ReceiverWithAntennaDescriptors,
 
+    // GPS.
     GPSExtendedL1AndL2RTKObservables,
     GPSMSM7,
+    GPSEphemerides,
 
+    // BeiDou.
     BeiDouEphemeris,
     BeiDouMSM7,
 
+    // Galileo.
     GalileoEphemeris,
     GalileoMSM7,
+    GalileoFNAVSatelliteEphemeris,
 
+    // GLONASS.
     GLONASSMSM7,
     GLONASSL1AndL2CodePhaseBiases,
+    GLONASSEphemerides,
 
+    // QZSS.
     QZSSMSM7,
+    QZSSEphemerides,
+}
+
+#[derive(strum_macros::Display)]
+enum MessageInformation {
+    #[strum(to_string = "MSM7<Num:{message_number},RefStnId:{reference_station_id},Epch:{epoch_time}>")]
+    MSM7 {
+        message_number: u16,
+        reference_station_id: u16,
+        epoch_time: u32
+    },
+    Unknown
 }
 
 trait Message {
     fn get_type(&self) -> MessageType;
+    fn get_information(&self) -> Result<MessageInformation, String>;
 }
 
 impl Message for RTCM3Message {
@@ -57,23 +75,65 @@ impl Message for RTCM3Message {
             1008 => MessageType::AntennaDescriptorAndSerialNumber,
             1033 => MessageType::ReceiverWithAntennaDescriptors,
             1230 => MessageType::GLONASSL1AndL2CodePhaseBiases,
+            1013 => MessageType::SystemParamters,
+            1019 => MessageType::GPSEphemerides,
+            1020 => MessageType::GLONASSEphemerides,
+            1045 => MessageType::GalileoFNAVSatelliteEphemeris,
+            1044 => MessageType::QZSSEphemerides,
             _ => MessageType::Unknown {
                 val: msgtype
             }
         }
     }
+    
+    fn get_information(&self) -> Result<MessageInformation, String> {
+        match self.get_type() {
+            MessageType::BeiDouMSM7 => extract_msm7(&self.raw),
+            _ => Ok(MessageInformation::Unknown)
+        }
+    }
+}
+
+fn extract_msm7(raw: &Vec<u8>) -> Result<MessageInformation, String> {
+
+    // TODO add the rest of the spec.
+    return Ok(MessageInformation::MSM7 {
+        message_number: parse_bits(raw, 0, 12) as u16,
+        reference_station_id: parse_bits(raw, 12, 12) as u16,
+        epoch_time: parse_bits(raw, 24, 30)
+    });
+}
+
+impl ToString for RTCM3Message {
+    fn to_string(&self) -> String {
+        match self.get_type() {
+            _ => "Unknown".to_string()
+        }
+    }
+}
+
+fn parse_bits(data: &[u8], start_bit: usize, length: usize) -> u32 {
+    let mut value: u32 = 0;
+    for i in 0..length {
+        let byte_index = (start_bit + i) / 8;
+        let bit_index = 7 - ((start_bit + i) % 8);
+        let bit = (data[byte_index] >> bit_index) & 1;
+        value = (value << 1) | bit as u32;
+    }
+    value
 }
 
 fn main() {
     let messages = parse_rtcm3().unwrap();
 
     for msg in messages {
-        println!("Message - type: {}", msg.get_type())
+        let info = msg.get_information().unwrap();
+        println!("{}", info);
     }
 }
 
 fn parse_rtcm3() -> Result<Vec<RTCM3Message>, String> {
-    let mut f = File::open("sample_data")
+    let mut f = File::open("sample_data_2")
         .map_err(|_| "Could not open file")?;
 
     let mut buffer = Vec::new();
@@ -87,7 +147,7 @@ fn parse_rtcm3() -> Result<Vec<RTCM3Message>, String> {
         let byte1 = data[0];
 
         // Check if this is a RTCM3 start byte marker, skip if not.
-        if byte1 != EXPECTED_FIRST_BYTE {
+        if byte1 != 0xD3 {
             offset += 1;
             continue;
         }
